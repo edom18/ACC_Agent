@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ACC Agent Interface</title>
+    <link rel="stylesheet" href="static/style.css">
+    <!-- Font Awesome for icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar / Header Area -->
+        <header class="app-header">
+            <div class="logo">
+                <i class="fa-solid fa-brain"></i>
+                <h1>ACC Agent</h1>
+            </div>
+            <div class="status-indicator">
+                <span class="status-dot"></span>
+                <span class="status-text">Ready</span>
+            </div>
+        </header>
+
+        <main class="main-content">
+            <!-- Chat Section -->
+            <section class="chat-section">
+                <div class="chat-history" id="chat-history">
+                    <div class="message system-message">
+                        <div class="message-content">
+                            こんにちは。ACC (Agent Cognitive Compressor) エージェントです。<br>
+                            あなたの発言から重要な情報を「圧縮」して記憶します。何か話しかけてください。
+                        </div>
+                    </div>
+                    <!-- Messages will appear here -->
+                </div>
+                
+                <div class="input-area">
+                    <div class="input-container">
+                        <textarea id="user-input" placeholder="メッセージを入力..." rows="1"></textarea>
+                        <button id="send-btn">
+                            <i class="fa-solid fa-paper-plane"></i>
+                        </button>
+                    </div>
+                </div>
+            </section>
+
+            <!-- State Visualization Section -->
+            <section class="state-section">
+                <div class="section-header">
+                    <h2><i class="fa-solid fa-microchip"></i> Internal State (CCS)</h2>
+                    <span class="info-badge">Compressed Cognitive State</span>
+                </div>
+                <div class="state-container">
+                    <div id="loading-state" class="state-loading hidden">
+                        <i class="fa-solid fa-spinner fa-spin"></i> Updating Memory...
+                    </div>
+                    <div class="state-block">
+                        <h3>Episodic Trace</h3>
+                        <div class="state-content" id="state-episodic">-</div>
+                    </div>
+                    <div class="state-block">
+                        <h3>Semantic Gist</h3>
+                        <div class="state-content" id="state-gist">-</div>
+                    </div>
+                    <div class="state-block">
+                        <h3>Focal Entities</h3>
+                        <div class="state-content tag-container" id="state-entities">-</div>
+                    </div>
+                     <div class="state-block">
+                        <h3>Goal Orientation</h3>
+                        <div class="state-content" id="state-goal">-</div>
+                    </div>
+                    <div class="state-block">
+                        <h3>Constraints</h3>
+                        <div class="state-content list-content" id="state-constraints">-</div>
+                    </div>
+                    
+                    <div class="state-details">
+                        <details>
+                            <summary>Full JSON & Other Fields</summary>
+                            <pre id="state-full-json"></pre>
+                        </details>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <script src="static/script.js"></script>
+</body>
+</html>
