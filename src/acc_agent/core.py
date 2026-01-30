@@ -9,6 +9,28 @@ from pydantic import BaseModel, Field
 from .schemas import CompressedCognitiveState
 from .memory import ArtifactStore
 
+def _log_llm_interaction(step_name: str, prompt: Any, response: Any):
+    if os.getenv("ACC_DEBUG", "false").lower() != "true":
+        return
+    
+    separator = "=" * 50
+    print(f"\n{separator}")
+    print(f"DEBUG: {step_name}")
+    print(f"{separator}")
+    print("--- PROMPT ---")
+    if hasattr(prompt, "messages"):
+        for msg in prompt.messages:
+            print(f"[{msg.type}]: {msg.content}")
+    else:
+        print(prompt)
+    
+    print("\n--- RESPONSE ---")
+    if hasattr(response, "model_dump_json"):
+        print(response.model_dump_json(indent=2))
+    else:
+        print(response)
+    print(f"{separator}\n")
+
 class CognitiveCompressorModel:
     """
     Cognitive Compressor Model (CCM)
@@ -55,14 +77,20 @@ class CognitiveCompressorModel:
 
         chain = prompt | self.llm.with_structured_output(SelectedArtifacts)
         
+        input_vars = {
+            "prev_state_json": prev_state_json,
+            "current_input": current_input,
+            "artifacts_list": artifacts_list
+        }
+        
         try:
-            result = chain.invoke({
-                "prev_state_json": prev_state_json,
-                "current_input": current_input,
-                "artifacts_list": artifacts_list
-            })
+            result = chain.invoke(input_vars)
+            # Log the interaction
+            _log_llm_interaction("STEP 3: Qualify Artifacts", prompt.format_messages(**input_vars), result)
             return result.selected
-        except Exception:
+        except Exception as e:
+            if os.getenv("ACC_DEBUG", "false").lower() == "true":
+                print(f"DEBUG: Qualify Artifacts Failed: {e}")
             return []
 
     def compress_and_commit(self, current_input: str, prev_ccs: Optional[CompressedCognitiveState], qualified_artifacts: list[str]) -> CompressedCognitiveState:
@@ -100,11 +128,17 @@ class CognitiveCompressorModel:
         
         chain = prompt | self.llm.with_structured_output(CompressedCognitiveState)
         
-        new_ccs = chain.invoke({
+        input_vars = {
             "prev_state_json": prev_state_json,
             "artifacts": artifacts_str,
             "current_input": current_input
-        })
+        }
+        
+        new_ccs = chain.invoke(input_vars)
+        
+        # Log the interaction
+        _log_llm_interaction("STEP 4: Compress & Commit", prompt.format_messages(**input_vars), new_ccs)
+        
         return new_ccs
 
 class AgentEngine:
@@ -134,10 +168,15 @@ class AgentEngine:
         
         chain = prompt | self.llm
         
-        response = chain.invoke({
+        input_vars = {
             "ccs_json": ccs.model_dump_json(indent=2),
             "current_input": current_input
-        })
+        }
+        
+        response = chain.invoke(input_vars)
+        
+        # Log the interaction
+        _log_llm_interaction("STEP 5: Action (Agent Response)", prompt.format_messages(**input_vars), response.content)
         
         return response.content
 
