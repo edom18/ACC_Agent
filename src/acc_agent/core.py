@@ -4,18 +4,71 @@ from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.runnables import RunnablePassthrough
+from pydantic import BaseModel, Field
 
 from .schemas import CompressedCognitiveState
+from .memory import ArtifactStore
 
 class CognitiveCompressorModel:
     """
-    负责更新 CompressedCognitiveState (CCS) 的模块。
+    Cognitive Compressor Model (CCM)
+    CCSの更新とアーティファクトの選別を担当する。
     """
     def __init__(self, model_name: str = "gpt-4o"):
         self.llm = ChatOpenAI(model=model_name, temperature=0.0)
+
+    def qualify_artifacts(self, current_input: str, prev_ccs: Optional[CompressedCognitiveState], artifacts: list[str]) -> list[str]:
+        """
+        Qualify (Step 3): 検索された情報をフィルタリングし、真に必要なものだけを選別する。
+        """
+        if not artifacts:
+            return []
         
-    def compress_and_commit(self, current_input: str, prev_ccs: Optional[CompressedCognitiveState], retrieved_artifacts: list[str]) -> CompressedCognitiveState:
+        system_prompt = """
+あなたは情報の精査官です。
+提供された「外部想起情報」の中から、現在の対話文脈において「意思決定や正確な回答に不可欠な情報」だけを抽出してください。
+少しでも関連が薄い、あるいは現在のCCSや入力から推測可能な情報は除外してください。
+
+# 前回の状態 (Previous State)
+{prev_state_json}
+
+# 現在の入力 (Current Input)
+{current_input}
+
+# 外部想起情報 (Retrieved Artifacts)
+{artifacts_list}
+
+指示：
+- 選別された情報のリストをJSON形式で返してください。
+- 該当する情報がない場合は空のリストを返してください。
+"""
+        prev_state_json = prev_ccs.model_dump_json(indent=2) if prev_ccs else "（なし）"
+        artifacts_list = "\n".join([f"- {a}" for a in artifacts])
+
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", system_prompt),
+        ])
         
+        # Simple list of strings output
+        class SelectedArtifacts(BaseModel):
+            selected: list[str] = Field(..., description="選別された情報のリスト")
+
+        chain = prompt | self.llm.with_structured_output(SelectedArtifacts)
+        
+        try:
+            result = chain.invoke({
+                "prev_state_json": prev_state_json,
+                "current_input": current_input,
+                "artifacts_list": artifacts_list
+            })
+            return result.selected
+        except Exception:
+            return []
+
+    def compress_and_commit(self, current_input: str, prev_ccs: Optional[CompressedCognitiveState], qualified_artifacts: list[str]) -> CompressedCognitiveState:
+        """
+        Compress & Commit (Step 4): 情報を統合して新しいCCSを生成する。
+        """
         system_prompt = """
 あなたはエージェントの認知管理者 (Cognitive Manager) です。
 ユーザーとの会話履歴をそのまま保存するのではなく、意思決定に必要な「状態 (State)」だけを更新してください。
@@ -23,29 +76,28 @@ class CognitiveCompressorModel:
 # 前回の状態 (Previous State)
 {prev_state_json}
 
-# 外部想起情報 (Retrieved Artifacts)
+# 選別された外部情報 (Qualified Artifacts)
 {artifacts}
 
 # 現在の入力 (Current Input)
 {current_input}
 
 # 指示
-今の入力と前回の状態を統合し、新しい「圧縮された認知状態 (Compressed Cognitive State)」を生成してください。
+今の入力と前回の状態、および外部情報を統合し、新しい「圧縮された認知状態 (Compressed Cognitive State)」を生成してください。
 特に以下の点に注意してください：
-1. **Constraints (制約)** と **Goal (目標)** は、一度設定されたら明示的に変更指示がない限り維持し続けてください（不変項目の維持）。
+1. **Constraints (制約)** と **Goal (目標)** は、一度確立されたら明示的に変更・完了の指示がない限り維持し続けてください（不変項目の維持）。
 2. 重要でない詳細は積極的に捨て（忘却し）、スキーマの各フィールドを最新の事実に書き換えてください。
 3. `episodic_trace` は直近の出来事を簡潔に記述してください。
 4. `semantic_gist` は全体の流れを要約してください。
+5. `retrieved_artifacts` には今回参照した外部情報の要点を記録してください。
 """
-        # If it's the first turn, prev_state is None or empty.
         prev_state_json = prev_ccs.model_dump_json(indent=2) if prev_ccs else "（なし：初回起動）"
-        artifacts_str = "\n".join(retrieved_artifacts) if retrieved_artifacts else "（なし）"
+        artifacts_str = "\n".join(qualified_artifacts) if qualified_artifacts else "（なし）"
 
         prompt = ChatPromptTemplate.from_messages([
             ("system", system_prompt),
         ])
         
-        # Use structured output to ensure we get the CCS schema back
         chain = prompt | self.llm.with_structured_output(CompressedCognitiveState)
         
         new_ccs = chain.invoke({
@@ -97,29 +149,42 @@ class ACCController:
     def __init__(self):
         self.ccm = CognitiveCompressorModel()
         self.agent = AgentEngine()
-        # In a real app, this might be persisted in a DB keyed by session_id
+        self.store = ArtifactStore()
         self.current_ccs: Optional[CompressedCognitiveState] = None
 
     def process_turn(self, user_input: str) -> Dict[str, Any]:
         """
-        1ターン分の処理を実行する。
-        Input -> Recall(mock) -> Compress -> Update State -> Action
+        ACCメインループ (Algorithm 1):
+        1. Input
+        2. Recall
+        3. Qualify
+        4. Compress & Commit
+        5. Action
         """
         
-        # 1. Recall (Mocked for now)
-        # 実際にはここで Vector DB から検索を行う
-        retrieved_artifacts = [] 
+        # 1. Recall (Step 2)
+        # 入力と現在の状態（要約）の両方をクエリとして使用
+        recall_query = f"{user_input}\nContext: {self.current_ccs.semantic_gist if self.current_ccs else ''}"
+        raw_artifacts = self.store.recall(recall_query)
         
-        # 2. Compress & Commit (State Update)
-        # 前の状態 + 入力 -> 新しい状態
-        new_ccs = self.ccm.compress_and_commit(user_input, self.current_ccs, retrieved_artifacts)
+        # 2. Qualify (Step 3)
+        qualified_artifacts = self.ccm.qualify_artifacts(user_input, self.current_ccs, raw_artifacts)
+        
+        # 3. Compress & Commit (Step 4)
+        new_ccs = self.ccm.compress_and_commit(user_input, self.current_ccs, qualified_artifacts)
         
         # Update internal state (Replacement)
         self.current_ccs = new_ccs
         
-        # 3. Action
-        # 新しい状態 + 入力 -> 回答生成
+        # 4. Action (Step 5)
         response_text = self.agent.generate_response(user_input, self.current_ccs)
+        
+        # (Optional but recommended) 履歴をArtifact Storeに保存して将来のRecallに備える
+        # 今回のCCSのコピーを保存
+        self.store.add_artifact(
+            content=f"User: {user_input}\nAssistant: {response_text}\nGist: {new_ccs.semantic_gist}",
+            metadata={"type": "episodic_memory"}
+        )
         
         return {
             "response": response_text,
