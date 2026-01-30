@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="ja">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -8,8 +9,11 @@
     <!-- Font Awesome for icons -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
     <!-- Google Fonts -->
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;700&display=swap"
+        rel="stylesheet">
 </head>
+
 <body>
     <div class="app-container">
         <!-- Sidebar / Header Area -->
@@ -36,7 +40,7 @@
                     </div>
                     <!-- Messages will appear here -->
                 </div>
-                
+
                 <div class="input-area">
                     <div class="input-container">
                         <textarea id="user-input" placeholder="メッセージを入力..." rows="1"></textarea>
@@ -69,7 +73,7 @@
                         <h3>Focal Entities</h3>
                         <div class="state-content tag-container" id="state-entities">-</div>
                     </div>
-                     <div class="state-block">
+                    <div class="state-block">
                         <h3>Goal Orientation</h3>
                         <div class="state-content" id="state-goal">-</div>
                     </div>
@@ -77,7 +81,11 @@
                         <h3>Constraints</h3>
                         <div class="state-content list-content" id="state-constraints">-</div>
                     </div>
-                    
+                    <div class="state-block">
+                        <h3>Retrieved Artifacts</h3>
+                        <div class="state-content list-content" id="state-artifacts">-</div>
+                    </div>
+
                     <div class="state-details">
                         <details>
                             <summary>Full JSON & Other Fields</summary>
@@ -91,4 +99,5 @@
 
     <script src="static/script.js"></script>
 </body>
+
 </html>

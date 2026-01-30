@@ -10,6 +10,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const stateEntities = document.getElementById('state-entities');
     const stateGoal = document.getElementById('state-goal');
     const stateConstraints = document.getElementById('state-constraints');
+    const stateArtifacts = document.getElementById('state-artifacts');
     const stateFullJson = document.getElementById('state-full-json');
 
     // Generate a random session ID for this page load
@@ -61,6 +62,20 @@ document.addEventListener('DOMContentLoaded', () => {
             stateConstraints.appendChild(ul);
         } else {
             stateConstraints.textContent = '-';
+        }
+
+        // Artifacts (Array)
+        stateArtifacts.innerHTML = '';
+        if (state.retrieved_artifacts && state.retrieved_artifacts.length > 0) {
+            const ul = document.createElement('ul');
+            state.retrieved_artifacts.forEach(a => {
+                const li = document.createElement('li');
+                li.textContent = a;
+                ul.appendChild(li);
+            });
+            stateArtifacts.appendChild(ul);
+        } else {
+            stateArtifacts.textContent = '-';
         }
 
         // Full JSON

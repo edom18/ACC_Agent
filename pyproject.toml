@@ -8,7 +8,9 @@ dependencies = [
     "pydantic",
     "langchain",
     "langchain-openai",
-    "python-dotenv"
+    "python-dotenv",
+    "chromadb",
+    "langchain-community"
 ]
 requires-python = ">=3.10"
 
