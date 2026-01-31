@@ -1,9 +1,10 @@
 import os
-from fastapi import FastAPI, HTTPException
+import json
+from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
 from pydantic import BaseModel
-from typing import Optional, Dict
+from typing import Optional, Dict, Iterator
 
 from dotenv import load_dotenv
 
@@ -26,16 +27,45 @@ class ChatRequest(BaseModel):
     message: str
     session_id: str = "default"
 
-class ChatResponse(BaseModel):
-    reply: str
-    state: dict
-
 @app.get("/")
 async def read_root():
     return FileResponse('static/index.html')
 
-@app.post("/chat", response_model=ChatResponse)
-async def chat_endpoint(request: ChatRequest):
+async def stream_generator(controller: ACCController, user_input: str, background_tasks: BackgroundTasks) -> Iterator[str]:
+    """
+    ストリーミングレスポンスを生成するジェネレータ。
+    """
+    # 1-4. Preparation (Synchronous wait)
+    # ここでRecall, Qualify, Compressが走る
+    try:
+        prep_result = controller.prepare_turn(user_input)
+    except Exception as e:
+        yield f"Error during preparation: {str(e)}"
+        return
+
+    full_response = ""
+    
+    # 5. Action (Streaming)
+    try:
+        async for chunk in controller.stream_action(user_input):
+            full_response += chunk
+            yield chunk
+    except Exception as e:
+        yield f"[Error generating response: {str(e)}]"
+        return
+
+    # 完了後にメモリ保存タスクを予約
+    # BackgroundTasksはResponse返却後に実行される
+    background_tasks.add_task(controller.finalize_turn, user_input, full_response)
+
+    # 最後にCCSの状態をJSONデータとして送る (SSEのデータイベントとして送るのが一般的だが、
+    # ここではシンプルにテキストストリームの後に区切り文字を入れて送る、あるいはクライアントが別途取得する設計も可。
+    # 今回はシンプルにテキストのみを返すストリームとし、Stateの即時反映は諦めるか、
+    # クライアント側で別途ポーリングしてもらう想定とする。
+    # 要件は「レスポンスの遅さを最小にする」なので、Textだけ返ればOKとする。)
+
+@app.post("/chat")
+async def chat_endpoint(request: ChatRequest, background_tasks: BackgroundTasks):
     session_id = request.session_id
     
     if session_id not in sessions:
@@ -43,16 +73,22 @@ async def chat_endpoint(request: ChatRequest):
     
     controller = sessions[session_id]
     
-    try:
-        result = controller.process_turn(request.message)
-        return ChatResponse(
-            reply=result["response"],
-            state=result["ccs"]
-        )
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+    return StreamingResponse(
+        stream_generator(controller, request.message, background_tasks),
+        media_type="text/plain",
+        headers={"X-Accel-Buffering": "no"}
+    )
+
+@app.get("/state/{session_id}")
+async def get_state(session_id: str):
+    if session_id not in sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    controller = sessions[session_id]
+    if controller.current_ccs:
+        return controller.current_ccs.model_dump()
+    else:
+        return {}
 
 if __name__ == "__main__":
     import uvicorn
