@@ -79,6 +79,17 @@ async def chat_endpoint(request: ChatRequest, background_tasks: BackgroundTasks)
         headers={"X-Accel-Buffering": "no"}
     )
 
+@app.get("/state/{session_id}")
+async def get_state(session_id: str):
+    if session_id not in sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    controller = sessions[session_id]
+    if controller.current_ccs:
+        return controller.current_ccs.model_dump()
+    else:
+        return {}
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)

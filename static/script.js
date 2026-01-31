@@ -31,7 +31,70 @@ document.addEventListener('DOMContentLoaded', () => {
         return contentDiv; // Return for streaming updates
     }
 
-    // (updateStateDisplay kept as is, though unused for now)
+    function updateStateDisplay(state) {
+        if (!state) return;
+
+        // Simple fields
+        stateEpisodic.textContent = state.episodic_trace || '-';
+        stateGist.textContent = state.semantic_gist || '-';
+        stateGoal.textContent = state.goal_orientation || '-';
+
+        // Entities (Array)
+        stateEntities.innerHTML = '';
+        if (state.focal_entities && state.focal_entities.length > 0) {
+            state.focal_entities.forEach(entity => {
+                const tag = document.createElement('span');
+                tag.className = 'tag';
+                tag.textContent = entity;
+                stateEntities.appendChild(tag);
+            });
+        } else {
+            stateEntities.textContent = '-';
+        }
+
+        // Constraints (Array)
+        stateConstraints.innerHTML = '';
+        if (state.constraints && state.constraints.length > 0) {
+            const ul = document.createElement('ul');
+            state.constraints.forEach(c => {
+                const li = document.createElement('li');
+                li.textContent = c;
+                ul.appendChild(li);
+            });
+            stateConstraints.appendChild(ul);
+        } else {
+            stateConstraints.textContent = '-';
+        }
+
+        // Artifacts (Array)
+        stateArtifacts.innerHTML = '';
+        if (state.retrieved_artifacts && state.retrieved_artifacts.length > 0) {
+            const ul = document.createElement('ul');
+            state.retrieved_artifacts.forEach(a => {
+                const li = document.createElement('li');
+                li.textContent = a;
+                ul.appendChild(li);
+            });
+            stateArtifacts.appendChild(ul);
+        } else {
+            stateArtifacts.textContent = '-';
+        }
+
+        // Full JSON
+        stateFullJson.textContent = JSON.stringify(state, null, 2);
+    }
+
+    async function fetchState() {
+        try {
+            const res = await fetch(`/state/${sessionId}`);
+            if (res.ok) {
+                const state = await res.json();
+                updateStateDisplay(state);
+            }
+        } catch (e) {
+            console.error("Failed to fetch state:", e);
+        }
+    }
 
     async function sendMessage() {
         const text = userInput.value.trim();
@@ -88,8 +151,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             }
             
-            // State update is skipped for now as server doesn't send it in the stream.
-            // If needed, we could fetch state separately.
+            // Fetch and update state after streaming is done
+            await fetchState();
 
         } catch (error) {
             console.error(error);
