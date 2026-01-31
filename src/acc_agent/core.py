@@ -150,14 +150,19 @@ class AgentEngine:
 
     def generate_response(self, current_input: str, ccs: CompressedCognitiveState) -> str:
         # (Sync version kept for legacy/testing if needed, or could just wrap async)
-        system_prompt = """
+        system_prompt = """あなたはAIアシスタントです。
+
+# あなたのペルソナ
 {soul_context}
 
-{user_context}
-
+# 厳格に従うべきルール
 {agents_context}
 
-あなたはAIアシスタントです。
+# ユーザプロフィール
+{user_context}
+
+--
+
 以下の「圧縮された認知状態 (Compressed Cognitive State)」のみをコンテキストとして持ち、ユーザーに応答してください。
 過去の会話履歴の生データはありません。この重要事項の要約（CCS）だけが全てです。
 
@@ -190,14 +195,19 @@ class AgentEngine:
         """
         ストリーミングレスポンスを生成する非同期ジェネレータ。
         """
-        system_prompt = """
+        system_prompt = """あなたはAIアシスタントです。
+
+# あなたのペルソナ
 {soul_context}
 
-{user_context}
-
+# 厳格に従うべきルール
 {agents_context}
 
-あなたはAIアシスタントです。
+# ユーザプロフィール
+{user_context}
+
+--
+
 以下の「圧縮された認知状態 (Compressed Cognitive State)」のみをコンテキストとして持ち、ユーザーに応答してください。
 過去の会話履歴の生データはありません。この重要事項の要約（CCS）だけが全てです。
 
