@@ -30,16 +30,19 @@ class MemoryManager:
         today = datetime.date.today().strftime("%Y-%m-%d")
         return self.memory_dir / f"{today}.md"
 
-    def append_to_daily_log(self, user_input: str, agent_response: str):
-        """今日のDaily Logに対話を追加する"""
+    def read_daily_journal(self) -> str:
+        """今日のDaily Log（日記）の内容を読み込む"""
         log_path = self.get_daily_log_path()
-        timestamp = datetime.datetime.now().strftime("%H:%M:%S")
-        
-        entry = f"\n## [{timestamp}]\n**User**: {user_input}\n\n**Agent**: {agent_response}\n"
-        
-        # 追記モードで書き込み
-        with open(log_path, "a", encoding="utf-8") as f:
-            f.write(entry)
+        if log_path.exists():
+            return log_path.read_text(encoding="utf-8")
+        return ""
+
+    def save_daily_journal(self, content: str):
+        """今日のDaily Log（日記）を上書き保存する"""
+        log_path = self.get_daily_log_path()
+        # 上書きモードで書き込み
+        with open(log_path, "w", encoding="utf-8") as f:
+            f.write(content)
 
     def append_to_long_term_memory(self, facts: List[str]):
         """MEMORY.mdに新しい事実を追加する"""

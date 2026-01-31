@@ -65,3 +65,47 @@ class MemoryProcessor:
         except Exception as e:
             print(f"Error in extract_memories: {e}")
             return []
+
+    def update_daily_journal(self, current_journal: str, user_input: str, agent_response: str) -> str:
+        """
+        今日の日記（Journal）を更新する。
+        新しい対話内容を踏まえて、既存の日記をリライト（再構成）する。
+        """
+        system_prompt = """
+あなたはAIエージェント自身です。
+今日一日の出来事を記録する「業務日誌（Journal）」を書いています。
+
+# 入力情報
+- **現在の業務日誌**: {current_journal}
+- **最新のユーザー入力**: {user_input}
+- **最新のあなたの応答**: {agent_response}
+
+# 指示
+既存の日記の内容を保持しつつ、最新のやり取りを自然に統合して、日記全体を書き直してください。
+- **視点**: 一人称（私 / I）。
+- **スタイル**: 客観的かつ簡潔に。箇条書きではなく、自然な文章（ナラティブ）で記述する。
+- **内容**: ユーザーが何に取り組み、どのような問題を解決したか、どのような決定をしたかを記録する。
+- **追記ではなく統合**: 単に末尾に追加するのではなく、文脈がつながるように全体を調整してよい。日付が変わっていなければ、一つのまとまりのある文章にする。
+
+出力は、更新された日記の本文のみを返してください。
+"""
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", system_prompt),
+        ])
+        
+        class JournalUpdate(BaseModel):
+            journal_content: str = Field(..., description="更新された日記の本文")
+            
+        chain = prompt | self.llm.with_structured_output(JournalUpdate)
+        
+        try:
+            result = chain.invoke({
+                "current_journal": current_journal if current_journal else "(まだ記録なし)",
+                "user_input": user_input,
+                "agent_response": agent_response
+            })
+            return result.journal_content
+        except Exception as e:
+            print(f"Error in update_daily_journal: {e}")
+            # エラー時は既存＋今回の追記（バックアップ的処理）
+            return f"{current_journal}\n\n*Update Error: {e}*\nUser: {user_input}\nAgent: {agent_response}"

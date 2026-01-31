@@ -281,8 +281,10 @@ class ACCController:
         
         # --- Memory Updates (OpenClaw Style) ---
         
-        # 1. Daily Log
-        self.memory_manager.append_to_daily_log(user_input, response_text)
+        # 1. Daily Log (Journal Update)
+        current_journal = self.memory_manager.read_daily_journal()
+        new_journal = self.memory_processor.update_daily_journal(current_journal, user_input, response_text)
+        self.memory_manager.save_daily_journal(new_journal)
         
         # 2. Memory Flush (Extract Facts)
         facts = self.memory_processor.extract_memories(user_input, response_text, new_ccs)
