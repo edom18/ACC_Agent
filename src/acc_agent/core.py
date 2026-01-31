@@ -9,6 +9,8 @@ from pydantic import BaseModel, Field
 
 from .schemas import CompressedCognitiveState
 from .memory import ArtifactStore
+from .memory_manager import MemoryManager
+from .memory_processor import MemoryProcessor
 
 def _log_llm_interaction(step_name: str, prompt: Any, response: Any):
     if os.getenv("ACC_DEBUG", "false").lower() != "true":
@@ -95,7 +97,7 @@ class CognitiveCompressorModel:
                 print(f"DEBUG: Qualify Artifacts Failed: {e}")
             return []
 
-    def compress_and_commit(self, current_input: str, prev_ccs: Optional[CompressedCognitiveState], qualified_artifacts: list[str]) -> CompressedCognitiveState:
+    def compress_and_commit(self, current_input: str, prev_ccs: Optional[CompressedCognitiveState], qualified_artifacts: list[str], long_term_memory: str = "") -> CompressedCognitiveState:
         """
         Compress & Commit (Step 4): 情報を統合して新しいCCSを生成する。
         """
@@ -105,6 +107,13 @@ class CognitiveCompressorModel:
 
 # 動作ルール (Agents Protocols)
 {agents_context}
+
+# 既存の長期記憶 (Existing Long-term Knowledge)
+{long_term_memory}
+
+指示：
+長期記憶に既に存在する情報は、CCSに重複して保存しないでください。
+
 
 
 # 前回の状態 (Previous State)
@@ -138,7 +147,8 @@ class CognitiveCompressorModel:
             "prev_state_json": prev_state_json,
             "artifacts": artifacts_str,
             "current_input": current_input,
-            "agents_context": self.agents_context
+            "agents_context": self.agents_context,
+            "long_term_memory": long_term_memory
         }
         
         new_ccs = chain.invoke(input_vars)
@@ -205,13 +215,16 @@ class ACCController:
     メモリ更新サイクルを制御する。
     """
     def __init__(self):
-        # Load Context Files
         self.user_name = os.getenv("ACC_USER_NAME", "edom18")
         self.settings_dir = Path(f"agent-settings/{self.user_name}")
         
         self.soul_context = self._load_context_file("SOUL.md")
         self.user_context = self._load_context_file("USER.md")
         self.agents_context = self._load_context_file("AGENTS.md")
+
+        # Initialize Memory Components
+        self.memory_manager = MemoryManager(user_name=self.user_name)
+        self.memory_processor = MemoryProcessor()
 
         self.ccm = CognitiveCompressorModel(agents_context=self.agents_context)
         self.agent = AgentEngine(
@@ -249,8 +262,16 @@ class ACCController:
         # 2. Qualify (Step 3)
         qualified_artifacts = self.ccm.qualify_artifacts(user_input, self.current_ccs, raw_artifacts)
         
+        # Load Long-term Memory for CCM
+        ltm_content = self.memory_manager.read_long_term_memory()
+
         # 3. Compress & Commit (Step 4)
-        new_ccs = self.ccm.compress_and_commit(user_input, self.current_ccs, qualified_artifacts)
+        new_ccs = self.ccm.compress_and_commit(
+            user_input, 
+            self.current_ccs, 
+            qualified_artifacts,
+            long_term_memory=ltm_content
+        )
         
         # Update internal state (Replacement)
         self.current_ccs = new_ccs
@@ -258,8 +279,22 @@ class ACCController:
         # 4. Action (Step 5)
         response_text = self.agent.generate_response(user_input, self.current_ccs)
         
-        # (Optional but recommended) 履歴をArtifact Storeに保存して将来のRecallに備える
+        # --- Memory Updates (OpenClaw Style) ---
+        
+        # 1. Daily Log
+        self.memory_manager.append_to_daily_log(user_input, response_text)
+        
+        # 2. Memory Flush (Extract Facts)
+        facts = self.memory_processor.extract_memories(user_input, response_text, new_ccs)
+        if facts:
+            self.memory_manager.append_to_long_term_memory(facts)
+            # Also add to vector store for retrieval
+            for fact in facts:
+                self.store.add_artifact(fact, metadata={"type": "semantic_memory", "source": "memory_flush"})
+
+        # (Legacy) Episodic Trace for Artifact Store
         # 今回のCCSのコピーを保存
+
         self.store.add_artifact(
             content=f"User: {user_input}\nAssistant: {response_text}\nGist: {new_ccs.semantic_gist}",
             metadata={"type": "episodic_memory"}
