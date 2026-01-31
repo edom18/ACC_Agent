@@ -148,7 +148,7 @@ class AgentEngine:
         self.user_context = user_context
         self.agents_context = agents_context
 
-    def generate_response(self, current_input: str, ccs: CompressedCognitiveState) -> str:
+    def generate_response(self, current_input: str, ccs: CompressedCognitiveState, recent_memory: str = "") -> str:
         # (Sync version kept for legacy/testing if needed, or could just wrap async)
         system_prompt = """あなたはAIアシスタントです。
 
@@ -160,6 +160,9 @@ class AgentEngine:
 
 # ユーザプロフィール
 {user_context}
+
+# 直近の記憶 (Recent Memory)
+{recent_memory}
 
 --
 
@@ -184,14 +187,15 @@ class AgentEngine:
             "current_input": current_input,
             "soul_context": self.soul_context,
             "user_context": self.user_context,
-            "agents_context": self.agents_context
+            "agents_context": self.agents_context,
+            "recent_memory": recent_memory
         }
         
         response = chain.invoke(input_vars)
         _log_llm_interaction("STEP 5: Action (Agent Response)", prompt.format_messages(**input_vars), response.content)
         return response.content
 
-    async def generate_response_stream(self, current_input: str, ccs: CompressedCognitiveState) -> AsyncIterator[str]:
+    async def generate_response_stream(self, current_input: str, ccs: CompressedCognitiveState, recent_memory: str = "") -> AsyncIterator[str]:
         """
         ストリーミングレスポンスを生成する非同期ジェネレータ。
         """
@@ -206,6 +210,9 @@ class AgentEngine:
 # ユーザプロフィール
 {user_context}
 
+# 直近の記憶 (Recent Memory)
+{recent_memory}
+
 --
 
 以下の「圧縮された認知状態 (Compressed Cognitive State)」のみをコンテキストとして持ち、ユーザーに応答してください。
@@ -229,7 +236,8 @@ class AgentEngine:
             "current_input": current_input,
             "soul_context": self.soul_context,
             "user_context": self.user_context,
-            "agents_context": self.agents_context
+            "agents_context": self.agents_context,
+            "recent_memory": recent_memory
         }
         
         # Log prompt
@@ -266,6 +274,7 @@ class ACCController:
         )
         self.store = ArtifactStore()
         self.current_ccs: Optional[CompressedCognitiveState] = None
+        self.current_recent_memory: str = ""
 
     def _load_context_file(self, filename: str) -> str:
         file_path = self.settings_dir / filename
@@ -299,17 +308,21 @@ class ACCController:
         # Update internal state (Replacement)
         self.current_ccs = new_ccs
         
+        # Load Recent Memory for Action
+        self.current_recent_memory = self.memory_manager.read_recent_daily_logs()
+        
         return {
             "text": user_input, 
             "ccs": new_ccs,
-            "qualified_artifacts": qualified_artifacts
+            "qualified_artifacts": qualified_artifacts,
+            "recent_memory": self.current_recent_memory
         }
 
     async def stream_action(self, user_input: str) -> AsyncIterator[str]:
         """
         アクションフェーズ (Step 5) の非同期ストリーミング実行。
         """
-        async for chunk in self.agent.generate_response_stream(user_input, self.current_ccs):
+        async for chunk in self.agent.generate_response_stream(user_input, self.current_ccs, recent_memory=self.current_recent_memory):
             yield chunk
 
     def finalize_turn(self, user_input: str, response_text: str):
@@ -320,9 +333,10 @@ class ACCController:
         # --- Memory Updates (OpenClaw Style) ---
         
         # 1. Daily Log (Journal Update)
-        current_journal = self.memory_manager.read_daily_journal()
-        new_journal = self.memory_processor.update_daily_journal(current_journal, user_input, response_text)
-        self.memory_manager.save_daily_journal(new_journal)
+        # 追記式に変更
+        journal_entry = self.memory_processor.create_daily_journal_entry(user_input, response_text)
+        if journal_entry:
+            self.memory_manager.append_daily_log(journal_entry)
         
         # 2. Memory Flush (Extract Facts)
         facts = self.memory_processor.extract_memories(user_input, response_text, self.current_ccs)
@@ -347,7 +361,7 @@ class ACCController:
         prep_result = self.prepare_turn(user_input)
         
         # 5. Action
-        response_text = self.agent.generate_response(user_input, self.current_ccs)
+        response_text = self.agent.generate_response(user_input, self.current_ccs, recent_memory=self.current_recent_memory)
         
         # Finalize
         self.finalize_turn(user_input, response_text)

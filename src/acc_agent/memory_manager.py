@@ -25,24 +25,41 @@ class MemoryManager:
             self.memory_file.touch()
             self.memory_file.write_text("# Long-term Memory\n\n", encoding="utf-8")
 
-    def get_daily_log_path(self) -> Path:
-        """今日のDaily Logのパスを取得する"""
-        today = datetime.date.today().strftime("%Y-%m-%d")
-        return self.memory_dir / f"{today}.md"
+    def get_daily_log_path(self, date: Optional[datetime.date] = None) -> Path:
+        """指定された日付（デフォルトは今日）のDaily Logのパスを取得する"""
+        if date is None:
+            date = datetime.date.today()
+        return self.memory_dir / f"{date.strftime('%Y-%m-%d')}.md"
 
-    def read_daily_journal(self) -> str:
-        """今日のDaily Log（日記）の内容を読み込む"""
-        log_path = self.get_daily_log_path()
-        if log_path.exists():
-            return log_path.read_text(encoding="utf-8")
-        return ""
+    def read_recent_daily_logs(self, days: int = 2) -> str:
+        """過去N日分のDaily Logを読み込む"""
+        today = datetime.date.today()
+        logs = []
+        
+        # 今日から過去N日前まで遡る（新しい順に表示するか、古い順にするか。文脈的には古い→新しいが自然）
+        # days=2なら、昨日と今日。
+        for i in range(days - 1, -1, -1):
+            date = today - datetime.timedelta(days=i)
+            log_path = self.get_daily_log_path(date)
+            if log_path.exists():
+                content = log_path.read_text(encoding="utf-8")
+                logs.append(f"# {date.strftime('%Y-%m-%d')}\n\n{content}")
+        
+        return "\n\n".join(logs)
 
-    def save_daily_journal(self, content: str):
-        """今日のDaily Log（日記）を上書き保存する"""
+    def append_daily_log(self, content: str):
+        """今日のDaily Logに追記する"""
         log_path = self.get_daily_log_path()
-        # 上書きモードで書き込み
-        with open(log_path, "w", encoding="utf-8") as f:
-            f.write(content)
+        today_str = datetime.date.today().strftime("%Y-%m-%d")
+        
+        # ファイルが存在しない場合はヘッダーを作成
+        if not log_path.exists():
+            with open(log_path, "w", encoding="utf-8") as f:
+                f.write(f"# {today_str}\n\n")
+
+        # 追記（改行を挟む）
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(f"\n{content}\n")
 
     def append_to_long_term_memory(self, facts: List[str]):
         """MEMORY.mdに新しい事実を追加する"""
