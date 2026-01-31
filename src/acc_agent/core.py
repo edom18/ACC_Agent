@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 from typing import Optional, Dict, Any
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
@@ -36,8 +37,9 @@ class CognitiveCompressorModel:
     Cognitive Compressor Model (CCM)
     CCSの更新とアーティファクトの選別を担当する。
     """
-    def __init__(self, model_name: str = "gpt-4o"):
+    def __init__(self, agents_context: str = "", model_name: str = "gpt-4o"):
         self.llm = ChatOpenAI(model=model_name, temperature=0.0)
+        self.agents_context = agents_context
 
     def qualify_artifacts(self, current_input: str, prev_ccs: Optional[CompressedCognitiveState], artifacts: list[str]) -> list[str]:
         """
@@ -101,6 +103,10 @@ class CognitiveCompressorModel:
 あなたはエージェントの認知管理者 (Cognitive Manager) です。
 ユーザーとの会話履歴をそのまま保存するのではなく、意思決定に必要な「状態 (State)」だけを更新してください。
 
+# 動作ルール (Agents Protocols)
+{agents_context}
+
+
 # 前回の状態 (Previous State)
 {prev_state_json}
 
@@ -131,7 +137,8 @@ class CognitiveCompressorModel:
         input_vars = {
             "prev_state_json": prev_state_json,
             "artifacts": artifacts_str,
-            "current_input": current_input
+            "current_input": current_input,
+            "agents_context": self.agents_context
         }
         
         new_ccs = chain.invoke(input_vars)
@@ -146,11 +153,20 @@ class AgentEngine:
     CCSを参照して最終的な回答を生成するエージェント本体。
     履歴全文は見ず、CCSと現在の入力のみを見る。
     """
-    def __init__(self, model_name: str = "gpt-4o"):
+    def __init__(self, soul_context: str = "", user_context: str = "", agents_context: str = "", model_name: str = "gpt-4o"):
         self.llm = ChatOpenAI(model=model_name, temperature=0.7)
+        self.soul_context = soul_context
+        self.user_context = user_context
+        self.agents_context = agents_context
 
     def generate_response(self, current_input: str, ccs: CompressedCognitiveState) -> str:
         system_prompt = """
+{soul_context}
+
+{user_context}
+
+{agents_context}
+
 あなたはAIアシスタントです。
 以下の「圧縮された認知状態 (Compressed Cognitive State)」のみをコンテキストとして持ち、ユーザーに応答してください。
 過去の会話履歴の生データはありません。この重要事項の要約（CCS）だけが全てです。
@@ -170,7 +186,10 @@ class AgentEngine:
         
         input_vars = {
             "ccs_json": ccs.model_dump_json(indent=2),
-            "current_input": current_input
+            "current_input": current_input,
+            "soul_context": self.soul_context,
+            "user_context": self.user_context,
+            "agents_context": self.agents_context
         }
         
         response = chain.invoke(input_vars)
@@ -186,10 +205,31 @@ class ACCController:
     メモリ更新サイクルを制御する。
     """
     def __init__(self):
-        self.ccm = CognitiveCompressorModel()
-        self.agent = AgentEngine()
+        # Load Context Files
+        self.user_name = os.getenv("ACC_USER_NAME", "edom18")
+        self.settings_dir = Path(f"agent-settings/{self.user_name}")
+        
+        self.soul_context = self._load_context_file("SOUL.md")
+        self.user_context = self._load_context_file("USER.md")
+        self.agents_context = self._load_context_file("AGENTS.md")
+
+        self.ccm = CognitiveCompressorModel(agents_context=self.agents_context)
+        self.agent = AgentEngine(
+            soul_context=self.soul_context,
+            user_context=self.user_context,
+            agents_context=self.agents_context
+        )
         self.store = ArtifactStore()
         self.current_ccs: Optional[CompressedCognitiveState] = None
+
+    def _load_context_file(self, filename: str) -> str:
+        try:
+            path = self.settings_dir / filename
+            if path.exists():
+                return path.read_text(encoding="utf-8")
+        except Exception as e:
+            print(f"Warning: Failed to load {filename}: {e}")
+        return ""
 
     def process_turn(self, user_input: str) -> Dict[str, Any]:
         """
