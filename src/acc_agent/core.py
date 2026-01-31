@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Iterator, AsyncIterator
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import PydanticOutputParser
@@ -15,82 +15,70 @@ from .memory_processor import MemoryProcessor
 def _log_llm_interaction(step_name: str, prompt: Any, response: Any):
     if os.getenv("ACC_DEBUG", "false").lower() != "true":
         return
-    
-    separator = "=" * 50
-    print(f"\n{separator}")
-    print(f"DEBUG: {step_name}")
-    print(f"{separator}")
+        
+    print(f"\n--- {step_name.upper()} ---")
     print("--- PROMPT ---")
-    if hasattr(prompt, "messages"):
-        for msg in prompt.messages:
-            print(f"[{msg.type}]: {msg.content}")
+    if isinstance(prompt, list):
+        for msg in prompt:
+            print(f"{msg.type.upper()}: {msg.content}")
     else:
         print(prompt)
-    
-    print("\n--- RESPONSE ---")
-    if hasattr(response, "model_dump_json"):
-        print(response.model_dump_json(indent=2))
-    else:
-        print(response)
-    print(f"{separator}\n")
+    print("--- RESPONSE ---")
+    print(response)
+    print("==================================================")
 
 class CognitiveCompressorModel:
     """
-    Cognitive Compressor Model (CCM)
-    CCSの更新とアーティファクトの選別を担当する。
+    認知圧縮モデル (CCM)。
+    短期記憶(CCS)の更新と、長期記憶(LTM)へのインタフェースを担う。
+    Implementation based on: "The Cognitive Compressor: Optimized for bounded context windows"
     """
     def __init__(self, agents_context: str = "", model_name: str = "gpt-4o"):
         self.llm = ChatOpenAI(model=model_name, temperature=0.0)
         self.agents_context = agents_context
 
-    def qualify_artifacts(self, current_input: str, prev_ccs: Optional[CompressedCognitiveState], artifacts: list[str]) -> list[str]:
+    def qualify_artifacts(self, current_input: str, ccs: Optional[CompressedCognitiveState], artifacts: list[str]) -> list[str]:
         """
-        Qualify (Step 3): 検索された情報をフィルタリングし、真に必要なものだけを選別する。
+        Qualify (Step 3): Recallされた情報（Artifacts）の関連性を評価し、フィルタリングする。
         """
         if not artifacts:
             return []
-        
+            
         system_prompt = """
-あなたは情報の精査官です。
-提供された「外部想起情報」の中から、現在の対話文脈において「意思決定や正確な回答に不可欠な情報」だけを抽出してください。
-少しでも関連が薄い、あるいは現在のCCSや入力から推測可能な情報は除外してください。
+あなたはエージェントの記憶選別官です。
+ユーザーの入力と現在の状態に基づき、検索された過去の記憶（Artifacts）が「今の対話に必要かどうか」を判定してください。
 
-# 前回の状態 (Previous State)
-{prev_state_json}
-
-# 現在の入力 (Current Input)
+# 現在の入力
 {current_input}
 
-# 外部想起情報 (Retrieved Artifacts)
-{artifacts_list}
+# 現在の状態要約
+{ccs_gist}
 
-指示：
-- 選別された情報のリストをJSON形式で返してください。
-- 該当する情報がない場合は空のリストを返してください。
+# 判定基準
+- 現在のタスクや質問に直接関連する情報か？
+- 文脈を補完するために不可欠か？
+
+必要なArtifactのみをリストとして返してください。不要な場合は空リストを返してください。
 """
-        prev_state_json = prev_ccs.model_dump_json(indent=2) if prev_ccs else "（なし）"
-        artifacts_list = "\n".join([f"- {a}" for a in artifacts])
-
         prompt = ChatPromptTemplate.from_messages([
             ("system", system_prompt),
+            ("human", "Artifacts: {artifacts_list}")
         ])
         
-        # Simple list of strings output
-        class SelectedArtifacts(BaseModel):
-            selected: list[str] = Field(..., description="選別された情報のリスト")
+        class QualifiedList(BaseModel):
+            selected: list[str] = Field(description="関連性が高いと判断されたArtifactの内容リスト")
 
-        chain = prompt | self.llm.with_structured_output(SelectedArtifacts)
-        
-        input_vars = {
-            "prev_state_json": prev_state_json,
-            "current_input": current_input,
-            "artifacts_list": artifacts_list
-        }
+        chain = prompt | self.llm.with_structured_output(QualifiedList)
         
         try:
-            result = chain.invoke(input_vars)
-            # Log the interaction
-            _log_llm_interaction("STEP 3: Qualify Artifacts", prompt.format_messages(**input_vars), result)
+            result = chain.invoke({
+                "current_input": current_input,
+                "ccs_gist": ccs.semantic_gist if ccs else "None",
+                "artifacts_list": "\n---\n".join(artifacts)
+            })
+            
+            _log_llm_interaction("STEP 3: Qualify Artifacts", prompt.format_messages(current_input=current_input, ccs_gist=ccs.semantic_gist if ccs else "None", artifacts_list="\n---\n".join(artifacts)), result.selected)
+            
             return result.selected
         except Exception as e:
             if os.getenv("ACC_DEBUG", "false").lower() == "true":
@@ -114,34 +102,25 @@ class CognitiveCompressorModel:
 指示：
 長期記憶に既に存在する情報は、CCSに重複して保存しないでください。
 
-
-
 # 前回の状態 (Previous State)
 {prev_state_json}
 
-# 選別された外部情報 (Qualified Artifacts)
+# 関連する過去の記憶 (Qualified Artifacts)
 {artifacts}
 
-# 現在の入力 (Current Input)
+# 新しい入力 (Current Input)
 {current_input}
 
-# 指示
-今の入力と前回の状態、および外部情報を統合し、新しい「圧縮された認知状態 (Compressed Cognitive State)」を生成してください。
-特に以下の点に注意してください：
-1. **Constraints (制約)** と **Goal (目標)** は、一度確立されたら明示的に変更・完了の指示がない限り維持し続けてください（不変項目の維持）。
-2. 重要でない詳細は積極的に捨て（忘却し）、スキーマの各フィールドを最新の事実に書き換えてください。
-3. `episodic_trace` は直近の出来事を簡潔に記述してください。
-4. `semantic_gist` は全体の流れを要約してください。
-5. `retrieved_artifacts` には今回参照した外部情報の要点を記録してください。
+これらを統合し、新しい「圧縮された認知状態 (CCS)」を出力してください。
 """
-        prev_state_json = prev_ccs.model_dump_json(indent=2) if prev_ccs else "（なし：初回起動）"
-        artifacts_str = "\n".join(qualified_artifacts) if qualified_artifacts else "（なし）"
-
         prompt = ChatPromptTemplate.from_messages([
             ("system", system_prompt),
         ])
         
         chain = prompt | self.llm.with_structured_output(CompressedCognitiveState)
+        
+        prev_state_json = prev_ccs.model_dump_json(indent=2) if prev_ccs else "None (Initial State)"
+        artifacts_str = "\n---\n".join(qualified_artifacts) if qualified_artifacts else "None"
         
         input_vars = {
             "prev_state_json": prev_state_json,
@@ -170,6 +149,7 @@ class AgentEngine:
         self.agents_context = agents_context
 
     def generate_response(self, current_input: str, ccs: CompressedCognitiveState) -> str:
+        # (Sync version kept for legacy/testing if needed, or could just wrap async)
         system_prompt = """
 {soul_context}
 
@@ -203,11 +183,52 @@ class AgentEngine:
         }
         
         response = chain.invoke(input_vars)
-        
-        # Log the interaction
         _log_llm_interaction("STEP 5: Action (Agent Response)", prompt.format_messages(**input_vars), response.content)
-        
         return response.content
+
+    async def generate_response_stream(self, current_input: str, ccs: CompressedCognitiveState) -> AsyncIterator[str]:
+        """
+        ストリーミングレスポンスを生成する非同期ジェネレータ。
+        """
+        system_prompt = """
+{soul_context}
+
+{user_context}
+
+{agents_context}
+
+あなたはAIアシスタントです。
+以下の「圧縮された認知状態 (Compressed Cognitive State)」のみをコンテキストとして持ち、ユーザーに応答してください。
+過去の会話履歴の生データはありません。この重要事項の要約（CCS）だけが全てです。
+
+# 現在の認知状態 (Current Cognitive State)
+{ccs_json}
+
+この状態に基づき、ユーザーの入力に対して適切に応答・アクションを行ってください。
+制約事項 (Constraints) は必ず守ってください。
+"""
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", system_prompt),
+            ("human", "{current_input}")
+        ])
+        
+        chain = prompt | self.llm
+        
+        input_vars = {
+            "ccs_json": ccs.model_dump_json(indent=2),
+            "current_input": current_input,
+            "soul_context": self.soul_context,
+            "user_context": self.user_context,
+            "agents_context": self.agents_context
+        }
+        
+        # Log prompt
+        _log_llm_interaction("STEP 5: Action (Stream Start)", prompt.format_messages(**input_vars), "(Streaming...)")
+
+        # Use astream for async streaming
+        async for chunk in chain.astream(input_vars):
+            if chunk.content:
+                yield chunk.content
 
 class ACCController:
     """
@@ -215,6 +236,7 @@ class ACCController:
     メモリ更新サイクルを制御する。
     """
     def __init__(self):
+        # Load Context Files
         self.user_name = os.getenv("ACC_USER_NAME", "edom18")
         self.settings_dir = Path(f"agent-settings/{self.user_name}")
         
@@ -236,26 +258,17 @@ class ACCController:
         self.current_ccs: Optional[CompressedCognitiveState] = None
 
     def _load_context_file(self, filename: str) -> str:
-        try:
-            path = self.settings_dir / filename
-            if path.exists():
-                return path.read_text(encoding="utf-8")
-        except Exception as e:
-            print(f"Warning: Failed to load {filename}: {e}")
+        file_path = self.settings_dir / filename
+        if file_path.exists():
+            return file_path.read_text(encoding="utf-8")
         return ""
 
-    def process_turn(self, user_input: str) -> Dict[str, Any]:
+    def prepare_turn(self, user_input: str) -> Dict[str, Any]:
         """
-        ACCメインループ (Algorithm 1):
-        1. Input
-        2. Recall
-        3. Qualify
-        4. Compress & Commit
-        5. Action
+        ターンの準備フェーズ (Recall, Qualify, Compress)。
+        返り値として、新しいCCSと取得したアーティファクトを含む辞書を返す。
         """
-        
         # 1. Recall (Step 2)
-        # 入力と現在の状態（要約）の両方をクエリとして使用
         recall_query = f"{user_input}\nContext: {self.current_ccs.semantic_gist if self.current_ccs else ''}"
         raw_artifacts = self.store.recall(recall_query)
         
@@ -276,9 +289,24 @@ class ACCController:
         # Update internal state (Replacement)
         self.current_ccs = new_ccs
         
-        # 4. Action (Step 5)
-        response_text = self.agent.generate_response(user_input, self.current_ccs)
-        
+        return {
+            "text": user_input, 
+            "ccs": new_ccs,
+            "qualified_artifacts": qualified_artifacts
+        }
+
+    async def stream_action(self, user_input: str) -> AsyncIterator[str]:
+        """
+        アクションフェーズ (Step 5) の非同期ストリーミング実行。
+        """
+        async for chunk in self.agent.generate_response_stream(user_input, self.current_ccs):
+            yield chunk
+
+    def finalize_turn(self, user_input: str, response_text: str):
+        """
+        ターンの完了処理。
+        日記の更新、記憶の抽出、ベクトルDBへの保存など、重い処理をここで行う。
+        """
         # --- Memory Updates (OpenClaw Style) ---
         
         # 1. Daily Log (Journal Update)
@@ -287,7 +315,7 @@ class ACCController:
         self.memory_manager.save_daily_journal(new_journal)
         
         # 2. Memory Flush (Extract Facts)
-        facts = self.memory_processor.extract_memories(user_input, response_text, new_ccs)
+        facts = self.memory_processor.extract_memories(user_input, response_text, self.current_ccs)
         if facts:
             self.memory_manager.append_to_long_term_memory(facts)
             # Also add to vector store for retrieval
@@ -296,11 +324,23 @@ class ACCController:
 
         # (Legacy) Episodic Trace for Artifact Store
         # 今回のCCSのコピーを保存
-
         self.store.add_artifact(
-            content=f"User: {user_input}\nAssistant: {response_text}\nGist: {new_ccs.semantic_gist}",
+            content=f"User: {user_input}\nAssistant: {response_text}\nGist: {self.current_ccs.semantic_gist}",
             metadata={"type": "episodic_memory"}
         )
+
+    def process_turn(self, user_input: str) -> Dict[str, Any]:
+        """
+        (Legacy/Sync) 全工程を同期的に行うメソッド。
+        """
+        # 1-4. Prepared
+        prep_result = self.prepare_turn(user_input)
+        
+        # 5. Action
+        response_text = self.agent.generate_response(user_input, self.current_ccs)
+        
+        # Finalize
+        self.finalize_turn(user_input, response_text)
         
         return {
             "response": response_text,

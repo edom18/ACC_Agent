@@ -27,60 +27,11 @@ document.addEventListener('DOMContentLoaded', () => {
         msgDiv.appendChild(contentDiv);
         chatHistory.appendChild(msgDiv);
         chatHistory.scrollTop = chatHistory.scrollHeight;
+        
+        return contentDiv; // Return for streaming updates
     }
 
-    function updateStateDisplay(state) {
-        if (!state) return;
-
-        // Simple fields
-        stateEpisodic.textContent = state.episodic_trace || '-';
-        stateGist.textContent = state.semantic_gist || '-';
-        stateGoal.textContent = state.goal_orientation || '-';
-
-        // Entities (Array)
-        stateEntities.innerHTML = '';
-        if (state.focal_entities && state.focal_entities.length > 0) {
-            state.focal_entities.forEach(entity => {
-                const tag = document.createElement('span');
-                tag.className = 'tag';
-                tag.textContent = entity;
-                stateEntities.appendChild(tag);
-            });
-        } else {
-            stateEntities.textContent = '-';
-        }
-
-        // Constraints (Array)
-        stateConstraints.innerHTML = '';
-        if (state.constraints && state.constraints.length > 0) {
-            const ul = document.createElement('ul');
-            state.constraints.forEach(c => {
-                const li = document.createElement('li');
-                li.textContent = c;
-                ul.appendChild(li);
-            });
-            stateConstraints.appendChild(ul);
-        } else {
-            stateConstraints.textContent = '-';
-        }
-
-        // Artifacts (Array)
-        stateArtifacts.innerHTML = '';
-        if (state.retrieved_artifacts && state.retrieved_artifacts.length > 0) {
-            const ul = document.createElement('ul');
-            state.retrieved_artifacts.forEach(a => {
-                const li = document.createElement('li');
-                li.textContent = a;
-                ul.appendChild(li);
-            });
-            stateArtifacts.appendChild(ul);
-        } else {
-            stateArtifacts.textContent = '-';
-        }
-
-        // Full JSON
-        stateFullJson.textContent = JSON.stringify(state, null, 2);
-    }
+    // (updateStateDisplay kept as is, though unused for now)
 
     async function sendMessage() {
         const text = userInput.value.trim();
@@ -109,21 +60,47 @@ document.addEventListener('DOMContentLoaded', () => {
                 throw new Error(`API Error: ${response.status}`);
             }
 
-            const data = await response.json();
+            // Prepare AI message bubble
+            const aiContentDiv = addMessage('ai', '');
             
-            // Add AI response
-            addMessage('ai', data.reply);
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+
+            let firstChunkReceived = false;
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                
+                // Hide loading state as soon as we get the first chunk
+                if (!firstChunkReceived) {
+                    loadingState.classList.add('hidden');
+                    firstChunkReceived = true;
+                }
+
+                const chunk = decoder.decode(value, { stream: true });
+                if (chunk) {
+                    aiContentDiv.textContent += chunk;
+                    // Use requestAnimationFrame for smooth scrolling
+                    requestAnimationFrame(() => {
+                        chatHistory.scrollTop = chatHistory.scrollHeight;
+                    });
+                }
+            }
             
-            // Update State Visualization
-            updateStateDisplay(data.state);
+            // State update is skipped for now as server doesn't send it in the stream.
+            // If needed, we could fetch state separately.
 
         } catch (error) {
             console.error(error);
             addMessage('system', 'エラーが発生しました: ' + error.message);
+            loadingState.classList.add('hidden'); // Ensure hidden on error
         } finally {
             userInput.disabled = false;
             sendBtn.disabled = false;
-            loadingState.classList.add('hidden');
+            if (!loadingState.classList.contains('hidden')) {
+                loadingState.classList.add('hidden');
+            }
             userInput.focus();
         }
     }
