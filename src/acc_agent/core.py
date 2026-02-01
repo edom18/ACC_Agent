@@ -144,8 +144,9 @@ class AgentEngine:
     CCSを参照して最終的な回答を生成するエージェント本体。
     履歴全文は見ず、CCSと現在の入力のみを見る。
     """
-    def __init__(self, soul_context: str = "", user_context: str = "", agents_context: str = "", model_name: Optional[str] = None):
+    def __init__(self, identity_context: str = "", soul_context: str = "", user_context: str = "", agents_context: str = "", model_name: Optional[str] = None):
         self.llm = get_llm_model(model_name=model_name, temperature=0.7)
+        self.identity_context = identity_context
         self.soul_context = soul_context
         self.user_context = user_context
         self.agents_context = agents_context
@@ -154,13 +155,16 @@ class AgentEngine:
         # (Sync version kept for legacy/testing if needed, or could just wrap async)
         system_prompt = """あなたはAIアシスタントです。
 
-# あなたのペルソナ
+# あなたのアイデンティティ (Identity)
+{identity_context}
+
+# あなたの内面・指針 (Soul)
 {soul_context}
 
-# 厳格に従うべきルール
+# 厳格に従うべきルール (Agents Protocols)
 {agents_context}
 
-# ユーザプロフィール
+# ユーザプロフィール (User Profile)
 {user_context}
 
 # 直近の記憶 (Recent Memory)
@@ -187,6 +191,7 @@ class AgentEngine:
         input_vars = {
             "ccs_json": ccs.model_dump_json(indent=2),
             "current_input": current_input,
+            "identity_context": self.identity_context,
             "soul_context": self.soul_context,
             "user_context": self.user_context,
             "agents_context": self.agents_context,
@@ -203,13 +208,16 @@ class AgentEngine:
         """
         system_prompt = """あなたはAIアシスタントです。
 
-# あなたのペルソナ
+# あなたのアイデンティティ (Identity)
+{identity_context}
+
+# あなたの内面・指針 (Soul)
 {soul_context}
 
-# 厳格に従うべきルール
+# 厳格に従うべきルール (Agents Protocols)
 {agents_context}
 
-# ユーザプロフィール
+# ユーザプロフィール (User Profile)
 {user_context}
 
 # 直近の記憶 (Recent Memory)
@@ -236,6 +244,7 @@ class AgentEngine:
         input_vars = {
             "ccs_json": ccs.model_dump_json(indent=2),
             "current_input": current_input,
+            "identity_context": self.identity_context,
             "soul_context": self.soul_context,
             "user_context": self.user_context,
             "agents_context": self.agents_context,
@@ -261,6 +270,7 @@ class ACCController:
         self.settings_dir = Path(f"agent-settings/{self.user_name}")
         self.common_settings_dir = Path("agent-settings/common")
         
+        self.identity_context = self._load_context_file("IDENTITY.md")
         self.soul_context = self._load_context_file("SOUL.md")
         self.user_context = self._load_context_file("USER.md")
         self.agents_context = self._load_context_file("AGENTS.md", is_common=True)
@@ -271,6 +281,7 @@ class ACCController:
 
         self.ccm = CognitiveCompressorModel(agents_context=self.agents_context)
         self.agent = AgentEngine(
+            identity_context=self.identity_context,
             soul_context=self.soul_context,
             user_context=self.user_context,
             agents_context=self.agents_context
@@ -354,6 +365,12 @@ class ACCController:
         if introspection_results["updated_files"]:
             print(f"*** Context Updated: {introspection_results['updated_files']} ***")
             # Reload context for next turn
+            if "IDENTITY.md" in introspection_results["updated_files"]:
+                self.identity_context = self._load_context_file("IDENTITY.md")
+                self.agent.identity_context = self.identity_context
+            if "SOUL.md" in introspection_results["updated_files"]:
+                self.soul_context = self._load_context_file("SOUL.md")
+                self.agent.soul_context = self.soul_context
             if "USER.md" in introspection_results["updated_files"]:
                 self.user_context = self._load_context_file("USER.md")
                 self.agent.user_context = self.user_context

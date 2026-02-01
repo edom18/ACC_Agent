@@ -62,27 +62,37 @@ class IntrospectionAgent:
 
     def check_and_update_context(self, user_input: str, agent_response: str) -> List[str]:
         """
-        会話内容から、USER.md や AGENTS.md の更新が必要か判断し、必要なら更新する。
+        会話内容から、USER.md, IDENTITY.md, SOUL.md, AGENTS.md の更新が必要か判断し、必要なら更新する。
         """
         current_user_md = self._read_file("USER.md")
+        current_identity_md = self._read_file("IDENTITY.md")
+        current_soul_md = self._read_file("SOUL.md")
         current_agents_md = self._read_file("AGENTS.md", is_common=True)
         
         system_prompt = """
 あなたはAIエージェントの「設定管理者」です。
-ユーザーとの直近の会話内容に基づいて、以下の2つの設定ファイルを更新する必要があるか判断してください。
+ユーザーとの直近の会話内容に基づいて、以下の設定ファイルを更新する必要があるか判断してください。
 
 1. **USER.md**: ユーザーのプロフィール情報 (名前、役割、好み、現状など)
-2. **AGENTS.md**: エージェント自身の振る舞いルール (話し方、制約、守るべき指針)
+2. **IDENTITY.md**: エージェントのアイデンティティ (名前、性格、背景、核心価値など)
+3. **SOUL.md**: エージェントの内面・指針 (大切にしている考え方、振る舞いの本質など)
+4. **AGENTS.md**: エージェントの具体的な動作ルール (記述スタイル、制約事項など)
 
 # 更新判断基準
 - ユーザーから**明示的な変更依頼**があった場合 (例:「今後は敬語をやめて」「転職してCTOになった」)
-- ユーザーに関する**重要な事実の変化**が確実な場合
+- ユーザーまたはエージェントに関する**重要な変化や事実**が確実な場合
 - 新しい**恒久的なルール**が追加された場合
 
 # 現在のファイル内容
 
 ## USER.md
 {current_user_md}
+
+## IDENTITY.md
+{current_identity_md}
+
+## SOUL.md
+{current_soul_md}
 
 ## AGENTS.md
 {current_agents_md}
@@ -101,15 +111,19 @@ AI: {agent_response}
         ])
         
         class ContextUpdate(BaseModel):
-            new_user_md: Optional[str] = Field(description="更新後のUSER.mdの内容。変更なしならNone")
-            new_agents_md: Optional[str] = Field(description="更新後のAGENTS.mdの内容。変更なしならNone")
-            reason: str = Field(description="更新理由。更新しない場合はその理由")
+            new_user_md: Optional[str] = Field(description="更新後のUSER.md。変更なしならNone")
+            new_identity_md: Optional[str] = Field(description="更新後のIDENTITY.md。変更なしならNone")
+            new_soul_md: Optional[str] = Field(description="更新後のSOUL.md。変更なしならNone")
+            new_agents_md: Optional[str] = Field(description="更新後のAGENTS.md。変更なしならNone")
+            reason: str = Field(description="更新理由")
 
         chain = prompt | self.llm.with_structured_output(ContextUpdate)
         
         try:
             result = chain.invoke({
                 "current_user_md": current_user_md,
+                "current_identity_md": current_identity_md,
+                "current_soul_md": current_soul_md,
                 "current_agents_md": current_agents_md,
                 "user_input": user_input,
                 "agent_response": agent_response
@@ -117,17 +131,24 @@ AI: {agent_response}
             
             updated_files = []
             
-            if result.new_user_md and result.new_user_md.strip() != current_user_md.strip():
-                # Safety check: Don't allow empty wipes unless explicit? 
-                # Assuming prompt handles this mostly, but let's be safe.
-                if len(result.new_user_md) > 10: 
-                    self._write_file("USER.md", result.new_user_md)
-                    updated_files.append("USER.md")
+            # Helper to write if meaningful change
+            def safe_update(filename, new_content, current_content, is_common=False):
+                if new_content and new_content.strip() != current_content.strip() and len(new_content) > 10:
+                    self._write_file(filename, new_content, is_common=is_common)
+                    return True
+                return False
+
+            if safe_update("USER.md", result.new_user_md, current_user_md):
+                updated_files.append("USER.md")
             
-            if result.new_agents_md and result.new_agents_md.strip() != current_agents_md.strip():
-                if len(result.new_agents_md) > 10:
-                    self._write_file("AGENTS.md", result.new_agents_md, is_common=True)
-                    updated_files.append("AGENTS.md")
+            if safe_update("IDENTITY.md", result.new_identity_md, current_identity_md):
+                updated_files.append("IDENTITY.md")
+
+            if safe_update("SOUL.md", result.new_soul_md, current_soul_md):
+                updated_files.append("SOUL.md")
+            
+            if safe_update("AGENTS.md", result.new_agents_md, current_agents_md, is_common=True):
+                updated_files.append("AGENTS.md")
             
             if updated_files and os.getenv("ACC_DEBUG", "false").lower() == "true":
                 print(f"[Introspection] Context Update Reason: {result.reason}")
