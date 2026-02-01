@@ -90,3 +90,23 @@ C. エージェント統合 (ReAct Loop)
 - LangChain / LangGraph: エージェントループとツール実行の管理
 - OpenAI API (または他のLLM): CCMおよびエージェントのバックエンド
 - ChromaDB / FAISS: Artifact Store用（オプション、長期記憶が必要な場合）
+
+8. 自己更新メカニズム (Introspection Architecture)
+エージェントが自身の振る舞い設定 (`AGENTS.md`) やユーザー認識 (`USER.md`) を自律的に更新する仕組み。
+
+### A. Introspection Agent
+- **役割**: 会話のバックグラウンドで動作し、記憶の抽出とコンテキストの更新を担当するサブエージェント。 `MemoryProcessor` の機能を拡張・置換するもの。
+- **実行タイミング**: 毎ターンの `finalize_turn` フェーズ（回答生成後）。
+
+### B. 更新プロセス
+1. **Daily Journaling**: 日々の活動記録を作成し、短期記憶に追記する。
+2. **Fact Extraction**: 将来有用な事実を抽出し、長期記憶 (`MEMORY.md`) および Artifact Store に保存する。
+3. **Context Update Check**:
+    - 会話内容から「ユーザープロフィールの変化」や「ルールの変更依頼」を検知する。
+    - 変更が必要な場合、`USER.md` または `AGENTS.md` を直接書き換える。
+    - 書き換えは構造化されたJSON出力に基づいて行われ、不必要な変更を防ぐガードレール（Prompt Engineering）を設ける。
+
+### C. ファイル構成
+- `src/acc_agent/introspection.py`: 上記ロジックの実装クラス `IntrospectionAgent`。
+- `agent-settings/{user}/USER.md`: ユーザー情報（自己更新対象）。
+- `agent-settings/{user}/AGENTS.md`: エージェントのルール（自己更新対象）。
