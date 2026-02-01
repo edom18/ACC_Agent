@@ -162,6 +162,9 @@ class AgentEngine:
             Search the agent's long-term memory and daily notes for information.
             Use this tool when the conversation context is missing information or when you need to recall past events.
             """
+            if os.getenv("ACC_DEBUG", "false").lower() == "true":
+                print(f"\n[ACC] 🔍 Searching Memory with query: '{query}'")
+
             results = self.store.recall(query, n_results=3)
             # recall returns list of strings, join them
             return "\n---\n".join(results) if results else "No relevant information found."
