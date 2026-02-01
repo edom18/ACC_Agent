@@ -17,15 +17,18 @@ class IntrospectionAgent:
         self.llm = get_llm_model(model_name=model_name, temperature=0.0)
         self.user_name = user_name
         self.settings_dir = Path(f"agent-settings/{self.user_name}")
+        self.common_settings_dir = Path("agent-settings/common")
         
-    def _read_file(self, filename: str) -> str:
-        file_path = self.settings_dir / filename
+    def _read_file(self, filename: str, is_common: bool = False) -> str:
+        base_dir = self.common_settings_dir if is_common else self.settings_dir
+        file_path = base_dir / filename
         if file_path.exists():
             return file_path.read_text(encoding="utf-8")
         return ""
 
-    def _write_file(self, filename: str, content: str):
-        file_path = self.settings_dir / filename
+    def _write_file(self, filename: str, content: str, is_common: bool = False):
+        base_dir = self.common_settings_dir if is_common else self.settings_dir
+        file_path = base_dir / filename
         # Ensure directory exists
         file_path.parent.mkdir(parents=True, exist_ok=True)
         file_path.write_text(content, encoding="utf-8")
@@ -62,7 +65,7 @@ class IntrospectionAgent:
         会話内容から、USER.md や AGENTS.md の更新が必要か判断し、必要なら更新する。
         """
         current_user_md = self._read_file("USER.md")
-        current_agents_md = self._read_file("AGENTS.md")
+        current_agents_md = self._read_file("AGENTS.md", is_common=True)
         
         system_prompt = """
 あなたはAIエージェントの「設定管理者」です。
@@ -123,7 +126,7 @@ AI: {agent_response}
             
             if result.new_agents_md and result.new_agents_md.strip() != current_agents_md.strip():
                 if len(result.new_agents_md) > 10:
-                    self._write_file("AGENTS.md", result.new_agents_md)
+                    self._write_file("AGENTS.md", result.new_agents_md, is_common=True)
                     updated_files.append("AGENTS.md")
             
             if updated_files and os.getenv("ACC_DEBUG", "false").lower() == "true":

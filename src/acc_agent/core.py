@@ -259,10 +259,11 @@ class ACCController:
         # Load Context Files
         self.user_name = os.getenv("ACC_USER_NAME", "edom18")
         self.settings_dir = Path(f"agent-settings/{self.user_name}")
+        self.common_settings_dir = Path("agent-settings/common")
         
         self.soul_context = self._load_context_file("SOUL.md")
         self.user_context = self._load_context_file("USER.md")
-        self.agents_context = self._load_context_file("AGENTS.md")
+        self.agents_context = self._load_context_file("AGENTS.md", is_common=True)
 
         # Initialize Memory Components
         self.memory_manager = MemoryManager(user_name=self.user_name)
@@ -278,8 +279,9 @@ class ACCController:
         self.current_ccs: Optional[CompressedCognitiveState] = None
         self.current_recent_memory: str = ""
 
-    def _load_context_file(self, filename: str) -> str:
-        file_path = self.settings_dir / filename
+    def _load_context_file(self, filename: str, is_common: bool = False) -> str:
+        base_dir = self.common_settings_dir if is_common else self.settings_dir
+        file_path = base_dir / filename
         if file_path.exists():
             return file_path.read_text(encoding="utf-8")
         return ""
@@ -356,7 +358,7 @@ class ACCController:
                 self.user_context = self._load_context_file("USER.md")
                 self.agent.user_context = self.user_context
             if "AGENTS.md" in introspection_results["updated_files"]:
-                self.agents_context = self._load_context_file("AGENTS.md")
+                self.agents_context = self._load_context_file("AGENTS.md", is_common=True)
                 self.agent.agents_context = self.agents_context
                 self.ccm.agents_context = self.agents_context
 
