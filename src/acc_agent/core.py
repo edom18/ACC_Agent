@@ -1,7 +1,10 @@
 import os
 from pathlib import Path
-from typing import Optional, Dict, Any, Iterator, AsyncIterator
-from langchain_core.prompts import ChatPromptTemplate
+from typing import Optional, Dict, Any, Iterator, AsyncIterator, List
+from collections import deque
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, ToolMessage
+from langchain_core.tools import tool
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.runnables import RunnablePassthrough
 from pydantic import BaseModel, Field
@@ -144,15 +147,30 @@ class AgentEngine:
     CCSを参照して最終的な回答を生成するエージェント本体。
     履歴全文は見ず、CCSと現在の入力のみを見る。
     """
-    def __init__(self, identity_context: str = "", soul_context: str = "", user_context: str = "", agents_context: str = "", model_name: Optional[str] = None):
-        self.llm = get_llm_model(model_name=model_name, temperature=0.7)
+    def __init__(self, store: ArtifactStore, identity_context: str = "", soul_context: str = "", user_context: str = "", agents_context: str = "", model_name: Optional[str] = None):
+        self.raw_llm = get_llm_model(model_name=model_name, temperature=0.7)
         self.identity_context = identity_context
         self.soul_context = soul_context
         self.user_context = user_context
         self.agents_context = agents_context
+        self.store = store
 
-    def generate_response(self, current_input: str, ccs: CompressedCognitiveState, recent_memory: str = "") -> str:
-        # (Sync version kept for legacy/testing if needed, or could just wrap async)
+        # Define and Bind Tools
+        @tool
+        def search_memory(query: str) -> str:
+            """
+            Search the agent's long-term memory and daily notes for information.
+            Use this tool when the conversation context is missing information or when you need to recall past events.
+            """
+            results = self.store.recall(query, n_results=3)
+            # recall returns list of strings, join them
+            return "\n---\n".join(results) if results else "No relevant information found."
+
+        self.tools = [search_memory]
+        self.llm = self.raw_llm.bind_tools(self.tools)
+
+    def generate_response(self, current_input: str, ccs: CompressedCognitiveState, recent_memory: str = "", history: List[BaseMessage] = []) -> str:
+        # Construct System Prompt
         system_prompt = """あなたはAIアシスタントです。
 
 # あなたのアイデンティティ (Identity)
@@ -172,8 +190,8 @@ class AgentEngine:
 
 --
 
-以下の「圧縮された認知状態 (Compressed Cognitive State)」のみをコンテキストとして持ち、ユーザーに応答してください。
-過去の会話履歴の生データはありません。この重要事項の要約（CCS）だけが全てです。
+以下の「圧縮された認知状態 (CCS)」と「直近の会話履歴」をコンテキストとして持ち、ユーザーに応答してください。
+もし情報が不足している場合は、`search_memory` ツールを使用して過去の記憶を検索してください。
 
 # 現在の認知状態 (Current Cognitive State)
 {ccs_json}
@@ -183,11 +201,12 @@ class AgentEngine:
 """
         prompt = ChatPromptTemplate.from_messages([
             ("system", system_prompt),
-            ("human", "{current_input}")
+            MessagesPlaceholder(variable_name="chat_history"),
+            ("human", "{current_input}"),
+            MessagesPlaceholder(variable_name="agent_scratchpad", optional=True), # For older LC versions or manual tool loop
         ])
-        
-        chain = prompt | self.llm
-        
+
+        # Prepare initial input vars
         input_vars = {
             "ccs_json": ccs.model_dump_json(indent=2),
             "current_input": current_input,
@@ -195,16 +214,43 @@ class AgentEngine:
             "soul_context": self.soul_context,
             "user_context": self.user_context,
             "agents_context": self.agents_context,
-            "recent_memory": recent_memory
+            "recent_memory": recent_memory,
+            "chat_history": history
         }
-        
-        response = chain.invoke(input_vars)
-        _log_llm_interaction("STEP 5: Action (Agent Response)", prompt.format_messages(**input_vars), response.content)
-        return response.content
 
-    async def generate_response_stream(self, current_input: str, ccs: CompressedCognitiveState, recent_memory: str = "") -> AsyncIterator[str]:
+        # Manual Tool Execution Loop (ReAct-like)
+        messages = prompt.format_messages(**input_vars)
+        
+        # 1. First LLM Call
+        ai_msg = self.llm.invoke(messages)
+        
+        _log_llm_interaction("STEP 5: Action (Initial)", messages, ai_msg)
+
+        # Loop for tool calls
+        tool_iterations = 0
+        while ai_msg.tool_calls and tool_iterations < 3:
+            messages.append(ai_msg)
+            
+            for tool_call in ai_msg.tool_calls:
+                selected_tool = {"search_memory": self.tools[0]}[tool_call["name"].lower()]
+                tool_output = selected_tool.invoke(tool_call["args"])
+                messages.append(ToolMessage(content=tool_output, tool_call_id=tool_call["id"]))
+                
+                # Log tool output
+                if os.getenv("ACC_DEBUG", "false").lower() == "true":
+                    print(f"TOOL OUTPUT ({tool_call['name']}): {tool_output}")
+
+            # 2. Subsequent LLM Call
+            tool_iterations += 1
+            ai_msg = self.llm.invoke(messages)
+            _log_llm_interaction(f"STEP 5: Action (After Tool {tool_iterations})", messages, ai_msg)
+
+        return ai_msg.content
+
+    async def generate_response_stream(self, current_input: str, ccs: CompressedCognitiveState, recent_memory: str = "", history: List[BaseMessage] = []) -> AsyncIterator[str]:
         """
         ストリーミングレスポンスを生成する非同期ジェネレータ。
+        ツール呼び出しのループ処理を含む。
         """
         system_prompt = """あなたはAIアシスタントです。
 
@@ -225,8 +271,8 @@ class AgentEngine:
 
 --
 
-以下の「圧縮された認知状態 (Compressed Cognitive State)」のみをコンテキストとして持ち、ユーザーに応答してください。
-過去の会話履歴の生データはありません。この重要事項の要約（CCS）だけが全てです。
+以下の「圧縮された認知状態 (CCS)」と「直近の会話履歴」をコンテキストとして持ち、ユーザーに応答してください。
+もし情報が不足している場合は、`search_memory` ツールを使用して過去の記憶を検索してください。
 
 # 現在の認知状態 (Current Cognitive State)
 {ccs_json}
@@ -236,11 +282,11 @@ class AgentEngine:
 """
         prompt = ChatPromptTemplate.from_messages([
             ("system", system_prompt),
-            ("human", "{current_input}")
+            MessagesPlaceholder(variable_name="chat_history"),
+            ("human", "{current_input}"),
+            MessagesPlaceholder(variable_name="agent_scratchpad", optional=True), # For older LC versions or manual tool loop
         ])
-        
-        chain = prompt | self.llm
-        
+
         input_vars = {
             "ccs_json": ccs.model_dump_json(indent=2),
             "current_input": current_input,
@@ -248,16 +294,76 @@ class AgentEngine:
             "soul_context": self.soul_context,
             "user_context": self.user_context,
             "agents_context": self.agents_context,
-            "recent_memory": recent_memory
+            "recent_memory": recent_memory,
+            "chat_history": history
         }
-        
-        # Log prompt
-        _log_llm_interaction("STEP 5: Action (Stream Start)", prompt.format_messages(**input_vars), "(Streaming...)")
 
-        # Use astream for async streaming
-        async for chunk in chain.astream(input_vars):
-            if chunk.content:
-                yield chunk.content
+        # Manual Streaming Tool Execution Loop
+        messages = prompt.format_messages(**input_vars)
+        
+        tool_iterations = 0
+        while tool_iterations < 3:
+            # 1. Stream First/Next LLM Call
+            # We need to capture the full message to check for tool calls, 
+            # while yielding content chunks to the user.
+            
+            ai_msg_content = ""
+            tool_calls = []
+            
+            # Note: For streaming tool calls, we should ideally aggregate chunks.
+            # However, simpler approach: stream, then if tool_calls attr exists on the final aggregated object (not easy with simple loop)
+            # We will use 'astream' to yield chunks, and we also need to reconstruct the AIMessage.
+            # Using 'astream_events' or similar is better, but here we can iterate and check chunks.
+            
+            current_tool_call = None
+            
+            _log_llm_interaction(f"STEP 5: Action Stream (Iter {tool_iterations})", messages, "(Streaming...)")
+
+            ai_message_chunk = None
+            
+            async for chunk in self.llm.astream(messages):
+                if not ai_message_chunk:
+                    ai_message_chunk = chunk
+                else:
+                    ai_message_chunk += chunk
+                
+                if chunk.content:
+                    if isinstance(chunk.content, list):
+                        # Handle content being a list (e.g. multi-modal or specific provider behaviors)
+                        # Normally it's a list of strings or dicts. If strings, join them.
+                        content_str = ""
+                        for item in chunk.content:
+                            if isinstance(item, str):
+                                content_str += item
+                            elif isinstance(item, dict) and "text" in item:
+                                content_str += item["text"]
+                        
+                        yield content_str
+                    else:
+                        yield chunk.content
+                    
+            # After streaming finishes for this turn, check if there were tool calls
+            if ai_message_chunk and ai_message_chunk.tool_calls:
+                # Tool call detected!
+                messages.append(ai_message_chunk)
+                
+                # Notify user (optional, can look like a thought)
+                yield "\n(Searching memory...)\n" 
+
+                for tool_call in ai_message_chunk.tool_calls:
+                    selected_tool = {"search_memory": self.tools[0]}[tool_call["name"].lower()]
+                    tool_output = selected_tool.invoke(tool_call["args"])
+                    
+                    messages.append(ToolMessage(content=tool_output, tool_call_id=tool_call["id"]))
+                    
+                    if os.getenv("ACC_DEBUG", "false").lower() == "true":
+                        print(f"TOOL OUTPUT ({tool_call['name']}): {tool_output}")
+
+                tool_iterations += 1
+                # Continue loop -> Re-invoke LLM with tool outputs
+            else:
+                # No tool calls, this was the final answer.
+                break
 
 class ACCController:
     """
@@ -280,13 +386,15 @@ class ACCController:
         self.introspection = IntrospectionAgent(user_name=self.user_name)
 
         self.ccm = CognitiveCompressorModel(agents_context=self.agents_context)
+        self.store = ArtifactStore()
         self.agent = AgentEngine(
+            store=self.store,
             identity_context=self.identity_context,
             soul_context=self.soul_context,
             user_context=self.user_context,
             agents_context=self.agents_context
         )
-        self.store = ArtifactStore()
+        self.history: deque = deque(maxlen=15)
         self.current_ccs: Optional[CompressedCognitiveState] = None
         self.current_recent_memory: str = ""
 
@@ -330,14 +438,15 @@ class ACCController:
             "text": user_input, 
             "ccs": new_ccs,
             "qualified_artifacts": qualified_artifacts,
-            "recent_memory": self.current_recent_memory
+            "recent_memory": self.current_recent_memory,
+            "history": list(self.history)
         }
 
     async def stream_action(self, user_input: str) -> AsyncIterator[str]:
         """
         アクションフェーズ (Step 5) の非同期ストリーミング実行。
         """
-        async for chunk in self.agent.generate_response_stream(user_input, self.current_ccs, recent_memory=self.current_recent_memory):
+        async for chunk in self.agent.generate_response_stream(user_input, self.current_ccs, recent_memory=self.current_recent_memory, history=list(self.history)):
             yield chunk
 
     def finalize_turn(self, user_input: str, response_text: str):
@@ -386,20 +495,6 @@ class ACCController:
             metadata={"type": "episodic_memory"}
         )
 
-    def process_turn(self, user_input: str) -> Dict[str, Any]:
-        """
-        (Legacy/Sync) 全工程を同期的に行うメソッド。
-        """
-        # 1-4. Prepared
-        prep_result = self.prepare_turn(user_input)
-        
-        # 5. Action
-        response_text = self.agent.generate_response(user_input, self.current_ccs, recent_memory=self.current_recent_memory)
-        
-        # Finalize
-        self.finalize_turn(user_input, response_text)
-        
-        return {
-            "response": response_text,
-            "ccs": self.current_ccs.model_dump()
-        }
+        # Update Sliding Window History
+        self.history.append(HumanMessage(content=user_input))
+        self.history.append(AIMessage(content=response_text))
