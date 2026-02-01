@@ -16,13 +16,24 @@ document.addEventListener('DOMContentLoaded', () => {
     // Generate a random session ID for this page load
     const sessionId = 'session_' + Math.random().toString(36).substr(2, 9);
 
-    function addMessage(role, text) {
+    function addMessage(role, text, isLoading = false) {
         const msgDiv = document.createElement('div');
         msgDiv.className = `message ${role}-message`;
         
         const contentDiv = document.createElement('div');
         contentDiv.className = 'message-content';
-        contentDiv.textContent = text;
+        
+        if (isLoading) {
+            contentDiv.innerHTML = `
+                <div class="typing-indicator">
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                </div>
+            `;
+        } else {
+            contentDiv.textContent = text;
+        }
         
         msgDiv.appendChild(contentDiv);
         chatHistory.appendChild(msgDiv);
@@ -123,8 +134,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 throw new Error(`API Error: ${response.status}`);
             }
 
-            // Prepare AI message bubble
-            const aiContentDiv = addMessage('ai', '');
+            // Prepare AI message bubble with loading indicator
+            const aiContentDiv = addMessage('ai', '', true);
             
             const reader = response.body.getReader();
             const decoder = new TextDecoder();
@@ -138,6 +149,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 // Hide loading state as soon as we get the first chunk
                 if (!firstChunkReceived) {
                     loadingState.classList.add('hidden');
+                    aiContentDiv.innerHTML = ''; // Clear indicator
                     firstChunkReceived = true;
                 }
 
