@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 from .schemas import CompressedCognitiveState
 from .memory import ArtifactStore
 from .memory_manager import MemoryManager
-from .memory_processor import MemoryProcessor
+from .introspection import IntrospectionAgent
 
 def _log_llm_interaction(step_name: str, prompt: Any, response: Any):
     if os.getenv("ACC_DEBUG", "false").lower() != "true":
@@ -264,7 +264,7 @@ class ACCController:
 
         # Initialize Memory Components
         self.memory_manager = MemoryManager(user_name=self.user_name)
-        self.memory_processor = MemoryProcessor()
+        self.introspection = IntrospectionAgent(user_name=self.user_name)
 
         self.ccm = CognitiveCompressorModel(agents_context=self.agents_context)
         self.agent = AgentEngine(
@@ -332,19 +332,31 @@ class ACCController:
         """
         # --- Memory Updates (OpenClaw Style) ---
         
-        # 1. Daily Log (Journal Update)
-        # 追記式に変更
-        journal_entry = self.memory_processor.create_daily_journal_entry(user_input, response_text)
-        if journal_entry:
-            self.memory_manager.append_daily_log(journal_entry)
+        # 1. Introspection Cycle (Journal, Facts, Context Updates)
+        introspection_results = self.introspection.run_introspection_cycle(user_input, response_text, self.current_ccs)
         
-        # 2. Memory Flush (Extract Facts)
-        facts = self.memory_processor.extract_memories(user_input, response_text, self.current_ccs)
+        # Log Journal
+        if introspection_results["journal_entry"]:
+            self.memory_manager.append_daily_log(introspection_results["journal_entry"])
+            
+        # Log Facts
+        facts = introspection_results["facts"]
         if facts:
             self.memory_manager.append_to_long_term_memory(facts)
-            # Also add to vector store for retrieval
             for fact in facts:
                 self.store.add_artifact(fact, metadata={"type": "semantic_memory", "source": "memory_flush"})
+        
+        # Notify if Context Updated
+        if introspection_results["updated_files"]:
+            print(f"*** Context Updated: {introspection_results['updated_files']} ***")
+            # Reload context for next turn
+            if "USER.md" in introspection_results["updated_files"]:
+                self.user_context = self._load_context_file("USER.md")
+                self.agent.user_context = self.user_context
+            if "AGENTS.md" in introspection_results["updated_files"]:
+                self.agents_context = self._load_context_file("AGENTS.md")
+                self.agent.agents_context = self.agents_context
+                self.ccm.agents_context = self.agents_context
 
         # (Legacy) Episodic Trace for Artifact Store
         # 今回のCCSのコピーを保存
