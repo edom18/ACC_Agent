@@ -1,20 +1,20 @@
 import os
 from pathlib import Path
 from typing import List, Optional
-from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 import datetime
 
 from .schemas import CompressedCognitiveState
+from .llm_factory import get_llm_model
 
 class IntrospectionAgent:
     """
     自律的な更新を行うサブエージェント。
     会話から「記憶すべき事実」と「自身の設定変更」を検知し、実行する。
     """
-    def __init__(self, user_name: str, model_name: str = "gpt-4o"):
-        self.llm = ChatOpenAI(model=model_name, temperature=0.0)
+    def __init__(self, user_name: str, model_name: Optional[str] = None):
+        self.llm = get_llm_model(model_name=model_name, temperature=0.0)
         self.user_name = user_name
         self.settings_dir = Path(f"agent-settings/{self.user_name}")
         
@@ -94,6 +94,7 @@ AI: {agent_response}
 """
         prompt = ChatPromptTemplate.from_messages([
             ("system", system_prompt),
+            ("human", "Check for context updates based on the conversation.")
         ])
         
         class ContextUpdate(BaseModel):
@@ -166,6 +167,7 @@ AI: {agent_response}
 """
         prompt = ChatPromptTemplate.from_messages([
             ("system", system_prompt),
+            ("human", "Extract significant facts from the conversation.")
         ])
 
         class MemoryExtraction(BaseModel):
@@ -215,6 +217,7 @@ AI: {agent_response}
 """
         prompt = ChatPromptTemplate.from_messages([
             ("system", system_prompt),
+            ("human", "Create a journal entry if necessary.")
         ])
         
         class JournalEntry(BaseModel):

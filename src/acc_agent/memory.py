@@ -1,8 +1,7 @@
 import os
 from typing import List, Optional
 import chromadb
-from chromadb.utils import embedding_functions
-from langchain_openai import OpenAIEmbeddings
+from .llm_factory import get_embedding_function
 
 class ArtifactStore:
     """
@@ -13,14 +12,8 @@ class ArtifactStore:
         # Use persistent client to store data
         self.client = chromadb.PersistentClient(path="./.chroma_db")
         
-        # We need an embedding function. Since we are using OpenAI in this project, 
-        # we'll use OpenAI's embeddings via LangChain-compatible wrapper or direct.
-        # Direct chromadb OpenAI wrapper is also fine.
-        api_key = os.getenv("OPENAI_API_KEY")
-        self.embedding_fn = embedding_functions.OpenAIEmbeddingFunction(
-            api_key=api_key,
-            model_name="text-embedding-3-small"
-        )
+        # Use factory to get the correct embedding function based on provider
+        self.embedding_fn = get_embedding_function()
         
         self.collection = self.client.get_or_create_collection(
             name=collection_name, 

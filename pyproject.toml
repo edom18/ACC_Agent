@@ -10,7 +10,8 @@ dependencies = [
     "langchain-openai",
     "python-dotenv",
     "chromadb",
-    "langchain-community"
+    "langchain-community",
+    "langchain-google-genai"
 ]
 requires-python = ">=3.10"
 

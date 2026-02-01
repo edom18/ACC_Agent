@@ -1,7 +1,6 @@
 import os
 from pathlib import Path
 from typing import Optional, Dict, Any, Iterator, AsyncIterator
-from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.runnables import RunnablePassthrough
@@ -11,6 +10,7 @@ from .schemas import CompressedCognitiveState
 from .memory import ArtifactStore
 from .memory_manager import MemoryManager
 from .introspection import IntrospectionAgent
+from .llm_factory import get_llm_model
 
 def _log_llm_interaction(step_name: str, prompt: Any, response: Any):
     if os.getenv("ACC_DEBUG", "false").lower() != "true":
@@ -33,8 +33,9 @@ class CognitiveCompressorModel:
     短期記憶(CCS)の更新と、長期記憶(LTM)へのインタフェースを担う。
     Implementation based on: "The Cognitive Compressor: Optimized for bounded context windows"
     """
-    def __init__(self, agents_context: str = "", model_name: str = "gpt-4o"):
-        self.llm = ChatOpenAI(model=model_name, temperature=0.0)
+
+    def __init__(self, agents_context: str = "", model_name: Optional[str] = None):
+        self.llm = get_llm_model(model_name=model_name, temperature=0.0)
         self.agents_context = agents_context
 
     def qualify_artifacts(self, current_input: str, ccs: Optional[CompressedCognitiveState], artifacts: list[str]) -> list[str]:
@@ -115,6 +116,7 @@ class CognitiveCompressorModel:
 """
         prompt = ChatPromptTemplate.from_messages([
             ("system", system_prompt),
+            ("human", "Update the Cognitive State based on the input: {current_input}")
         ])
         
         chain = prompt | self.llm.with_structured_output(CompressedCognitiveState)
@@ -142,8 +144,8 @@ class AgentEngine:
     CCSを参照して最終的な回答を生成するエージェント本体。
     履歴全文は見ず、CCSと現在の入力のみを見る。
     """
-    def __init__(self, soul_context: str = "", user_context: str = "", agents_context: str = "", model_name: str = "gpt-4o"):
-        self.llm = ChatOpenAI(model=model_name, temperature=0.7)
+    def __init__(self, soul_context: str = "", user_context: str = "", agents_context: str = "", model_name: Optional[str] = None):
+        self.llm = get_llm_model(model_name=model_name, temperature=0.7)
         self.soul_context = soul_context
         self.user_context = user_context
         self.agents_context = agents_context
